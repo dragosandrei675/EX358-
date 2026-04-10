@@ -1,0 +1,550 @@
+EX-358 --
+$ cat ansible.cfg
+[defaults]
+inventory=inventory
+remote_user=devops
+callbacks_enabled=ansible.posix.timer, ansible.posix.profile_tasks
+collections_paths=./collections:/usr/share/ansible/collections
+roles_path=./roles:/usr/share/ansible/roles
+
+[inventory]
+enable_plugins=auto, ini, yaml, toml
+
+[galaxy]
+server_list = automation_hub, galaxy
+
+$ vi requirements.yml
+---
+collections:
+  - name: redhat.insight
+    version: 1.3.0
+    source: https://console.redhat.com/api/automation-hub/
+
+$ ansible-galaxy collection install community.crypto
+$ ansible-galaxy collection install /tmp/community-dns-3.2.2.tar.gz
+
+1.0 Managing Network Services
+
+---
+- name: Create network connections
+  hosts: servers
+  vars:
+    network_connection:
+      - name: lab_conn
+        type: ethernet
+        mac: "52:54:00:01:00:6f"
+        interface_name: eth1
+        autoconnect: true
+        state: up
+        ip:
+          dhcp4: false
+          address:
+            - 192.168.0.11/24
+
+  roles:
+    - redhat.rhel_system_roles.network
+
+2.0 Managing Network Bonding
+
+$ nmcli con show bond0 | grep bond.options
+$ nmcli con mod bond0 bond.options "mode=balance-rr"
+cat /proc/net/bonding/bond0
+
+---
+- name: Configure bond networks
+  hosts: servers
+  network_connections:
+    - name: bond0
+      type: bond
+      state: up
+      interface_name: bond0
+      autoconnect: true
+      bond:
+        mode: balance-rr / active-backup
+      ip:
+        address
+          - 192.168.0.100/24
+
+    - name: bond0-port1
+      controller: bond0
+      port_type: bond
+      state: up
+      type: ethernet
+      interface_name: eth1
+      autoconnect: true
+
+  roles:
+    - redhat.rhel_system_roles.network
+
+3.0 Managing DNS and DNS Servers
+
+- Configure caching name server
+
+$ dnf install unbound
+$ unbound-control-setup
+$ unbound-checkconf
+$ unbound-control dump_cache
+$ unbound-control flush
+$ systemctl enable --now unbound
+$ firewall-cmd --permanent --add-service=dns
+
+$ cat /etc/unbound/unbound.conf
+server:
+        interface-automatic: yes
+        access-control: 172.25.250.0/24 allow
+        domain-insecure: "example.com"
+
+forward-zone:
+        name: "."
+        forward-addr: 172.25.250.220
+
+$ cat /files/unbound.conf.j2
+server:
+      interface-automatic: {{ interface_automatic }}
+      access-control: {{ access-control }}
+      domain-insecure: {{ domain-insecure }}
+
+forward-zone:
+      name: "{{ forward_zone_name }}"
+      forward-addr: {{ forward_zone_addr }}
+
+-> use  ansible.builtin.template:
+
+$ dnf install bind
+$ vi /etc/named.conf
+$ chmod 640 /etc/named.backend.conf
+$ chgrp named /etc/named.backend.conf
+$ chmod 640 /var/names/.*zone
+$ chgrp named /var/names/.*zone
+$ mkdir /var/named/secondary
+$ semanage fcontext -a -t named_cache_t "/var/named/secondary(/.*)?"
+$ restorecon -Rv /var/named/secondary
+
+    - name: Copy primary config file
+      ansible.builtin.copy:
+        src: files/primary-named.conf
+        dest: /etc/named.conf
+        owner: root
+        group: named
+        setype: named_cache_t
+        mode: 0640
+      notify:
+        - reload_named
+
+    - name: Copy zone files to primary
+      ansible.builtin.copy:
+        src: files/zones/
+        dest: /var/named/
+        owner: root
+        group: named
+        setype: named_cache_t
+        mode: 0640
+      notify:
+        - reload_named
+
+    - name: Copy named.backend conf file
+      ansible.builtin.copy:
+        src: files/primary-named.backend.conf
+        dest: /etc/named.backend.conf
+        owner: root
+        group: named
+        setype: named_cache_t
+        mode: 0640
+      notify:
+        - reload_named
+
+4.0 Managing DHCP and IP Address Assignment
+
+- Configure DHCPv4
+
+$ dnf install dhcp-server
+$ systemctl enable --now dhcpd
+$ firewall-cmd --permanent --add-service=dhcp
+$ cat /etc/dhcp/dhcpd.conf
+$ dhcpt -t
+$ nmcli con add con-name dhcp-connection type ethernet ifname eth0 ipv4.method auto
+
+authoritative;
+
+subnet 10.1.1.0 netmask 255.255.255.0 {
+  range 10.1.1.200 10.1.1.254;
+  option broadcast-address 10.1.1.255;
+  option domain-name-servers 172.25.254.254;
+  option domain-search "example.net";
+  default-lease-time 600;
+  max-lease-time 7200;
+}
+host serverb {
+  hardware ethernet 52:54:00:01:00:6f;
+  fixed-address 10.1.1.100;
+}
+
+
+$ cat templates/dhcpd6.conf.j2
+authoritative;
+
+subnet6 {{ IPv6_prefix }} {
+  range6 {{ IPv6_start }} {{ IPv6_end }};
+  option dhcp6.name-servers {{ IPv6_ns }};
+  option dhcp6.domain-search "backend.lab.example.com";
+  default-lease-time 600;
+  max-lease-time 7200;
+}
+
+5.0 Managing Printers and Printing Files
+
+$ dnf install cups
+$ systemctl enable --now cups.service
+$ firewall-cmd --add-service=mdns
+$ ippfind -T 5
+ipp://serverc.lab.example.com:631/printers/lab-remote
+
+- Create a prin queue
+$ lpadmin -p lab-local -v ipp://serverc.lab.example.com:631/printers/lab-remote -m everywhere -E
+
+- Make lab-local default print queue
+$ lpadmin -d lab-local
+
+- Check if print queue exist
+$ lpamin -p lab-local
+$ cupsdisable lab-local -> disable a print queue
+$ cupsreject
+$ cupsenable lab-local
+$ lp .bashrc -> send a file to print
+
+6.0 Configuring Email Transmission
+
+---
+- name: Configure postfix
+  hosts: servers
+  vars:
+    postfix_conf:
+     relayhost: "[smtp.lab.example.com]"
+     inet_interfaces: "loopback-only"
+     mynetworks: "127.0.0.0/8 [::1]/128"
+     myorigin: "lab.example.com"
+     mydestination: ""
+
+  roles:
+    - redhat.rhel_system_roles.postfix
+
+$ mail -s 'SMTP-review client test' student@lab.example.com
+$ mutt -f imaps://imap.lab.example.com
+
+7.0 Configuring MariaDB SQL Databases
+
+$ cat files/.my.cnf.j2
+[client]
+user=root
+password=my_password
+socket=/var/lib/mysql/mysql.sock
+
+$ ansible-vault create files/user.yml
+---
+mysql_root_pw: redhat
+mysql_users:
+  - name: mary
+    host: '%'
+    password: mary_password
+    priv: 'legacy.*:SELECT'
+  - name: legacy
+    host: '%'
+    passowrd: legacy_password
+    priv: 'legact.*:SELECT,INSERT,UPDATE,DELETE'
+  - name: report
+    host: '%'
+    password: report_password
+    priv: 'legacy.*:SELECT'
+
+---
+- name: Install Mariadb clinet
+  hosts: db_clients
+  tasks:
+    - name: Install mariadb on clients
+      dnf:
+        name: mariadb
+        state: present
+
+- name: Install Mariadb server
+  hosts: db_servers
+  vars_files:
+    - files/users.yml
+  tasks:
+    - name: Install Mariadb server
+      dnf:
+        name: 
+          - mariadb-server
+          - python3-PyMySQL
+        state: present
+
+    - name: Start services
+      service:
+        name: mariadb
+        state: started
+        enabled: true
+
+    - name: Add firewall
+      ansible.posix.firewalld:
+        service: mysql
+        state: enabled
+        permanent: true
+        immediate: true
+
+    - name: Deploy .my.cnf
+      template:
+        src: .my.cnf.j2
+        dest: /root/.my.cnf
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Assing password to root user
+      community.mysql.mysql_user:
+        name: root
+        host_all: true
+        update_password: always
+        password: "{{ mysql_root_pw }}"
+        column_case_sensitive: false
+        login_unix_socket: /var/lib/mysql/mysql.sock
+
+    - name: Remove anonymous user
+      community.mysql.mysql_user:
+        name: ''
+        host_all: true
+        state: absent
+
+    - name: Remove test database
+      community.mysql.mysql_db:
+        name: test
+        state: absent
+
+    - name: Create legacy db
+      community.mysql.mysql_db:
+        name: legacy
+        state: present
+
+    - name: Copy backup file
+      copy:
+        src: legacy.sql
+        dest: /srv
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Restore legacy db
+      community.mysql.mysql_db:
+        name: legacy
+        state: import
+        target: /srv/legacy.sqp
+
+    - name: Create users
+      community.mysql.mysql_user:
+        name: "{{ item.name }}"
+        host: "{{ item.host }}"
+        password: "{{ item.password }}"
+        priv: "{{ item.priv }}"
+        update_password: always
+      loop: "{{ mysql_users }}"
+      no_log: true
+
+8.0 Configuring Web Servers
+
+-- Configure a NGINX server
+
+- Place a .conf file in /etc/nginx/conf.d/ directory
+
+$ dnf install nginx
+$ mkdir -p /srv/serverc
+$ echo 'This is the www-a page' > /srv/nginx/www-a/www/index.html
+$ semanage fcontext -a -t httpd_sys_content_t '/srv/serverc(/.*)?'
+$ restorecon -Rv /srv/
+$ cat /etc/nginx/conf.d/serverc.conf
+
+server { -> Configuring Virtual Servers
+    listen 80 ;
+    server_name www-a.lab.example.com;
+    return 301 https://$host$request_uri;
+
+    access_log /var/log/nginx/example.com_access.log main;
+    error_log /var/log/nginx/example.com_error.log main;
+    location / {
+        root /srv/www/example.com;
+        index index.html index.htm;
+
+}
+server { -> Configuring TLS Virtual Servers
+    listen 443 ssl;
+    server_name serverc.lab.example.com;
+    ssl_certificate /etc/pki/tls/certs/serverc.lab.example.com.crt;
+    ssl_certificate_key /etc/pki/tls/private/serverc.lab.example.com.key;
+    location / {
+        root /srv/serverc;
+        index index.html;
+    }
+}
+
+$ firewall-cmd --permanent --add-service=http
+$ firewall-cmd --permanent --add-service=https
+
+-- Selinux playbook
+---
+- name: Apply selinux
+  hosts: servera
+  vars:
+    selinux_fcontexts:
+      - target: '/srv/www(/.*)?'
+        setype: httpd_sys_content_t
+        state: present
+
+  roles:
+    - redhat.rhel_system_roles.selinux
+
+
+9.0 Providing File-based Network Storage
+
+- The root user on servera.lab.example.com can neither read nor write to the share, due to file permissions and the default root_squash setting.
+
+-  /nfsshare directory so that only servera.lab.example.com can mount the shared export in read/write mode. Ensure that all other systems in the lab.example.com DNS domain can only mount the shared export in read-only mode.
+
+/nfsshare servera.lab.example.com(rw) *.lab.example.com(ro)
+
+$ cat /etc/exports
+/srv/operator servera.lab.example.com(rw) 
+- root_squash (default) that makes root on servera.lab.example.com unable to read or write.
+
+$ dnf install nfs-utils
+$ systemctl enable --now nfs-server
+$ firewall-cmd --add-service=nfs --permanet
+$ mkdir /srv/operators
+$ chgrp operators /srv/operators
+$ chmod 2770 /srv/operators
+$ cat /etc/exports
+/srv/operators servera.lab.example.com(rw)
+$ systemctl reload nfs-server
+$ exportfs
+
+$ cat /etc/fstab
+serverd.lab.example.com:/nfsshare /share nfs defaults 0 0
+
+---
+- name: NFS
+  hosts: export_nfs
+  tasks:
+    - name: Install nfs
+      dnf:
+        name: nfs-utils
+        state: present
+
+    - name: Start the nfs service
+      service:
+        name: nfs-server
+        state: started
+        enabled: true
+
+    - name: Create the directory to share
+      ansible.builtin.file:
+        path: /srv/operator
+        owner: root
+        group: operators
+        mode: '2770'
+        state: directory
+
+    - name: Create export files
+      ansible.builtin.copy:
+        content: |
+          /srv/operator servera.lab.example.com(rw)
+        dest: /etc/exports
+        owner: root
+        group: root
+        mode: "0644"
+      notify: reload-nfs-server
+
+    - name: open firewall
+      ansible.posix.firewalld:
+        service: nfs
+        state: enabled
+        immediate: true
+        permanent: true
+  
+  handlers:...
+
+- name: Mount the shared nfs
+  hosts: mount_nfs
+  tasks:
+    - name: Mount the nfs share
+      ansible.posix.mount:
+        path: /operators_data
+        src: serverb.lab.example.com:/srv/operators
+        state: mounted
+        fstype: nfs
+
+    - name: Test NFS share access as operator1
+      become_user: operator1
+      ansible.builtin.copy:
+        content: |
+          Hello World
+        dest: /operators/data/text.txt"
+        owner: operator1
+        mode: "0644"
+
+-- Install Samba server
+
+$ dnf install samba
+$ useradd -r -s /sbin/nologin sambamount
+$ smbpasswd -a sambamount
+$ useradd -s /sbin/nologin -G developers developer1
+$ smbpasswd -a developer1
+
+$ mkdir /srv/developers
+$ chown sambamount:developers /srv/developers
+$ semanage fcontext -a -t samaba_share_t '/srv/developers(/.*)?'
+$ restorecon -Rv /srv/developers
+
+$ cat /etc/samba/smb.conf
+
+[global]
+        workgroup = MYWORKGROUP
+        smb encrypt = required
+        server min protocol = SMB3
+[devdata]
+        path = /srv/developers
+        valid user = sambamount, @developers -> 
+        write list = @developers
+
+$ testparm -s
+$ systemctl enable --now smb
+$ firewall-cmd --permanent --add-service=samba
+
+-- On samba client
+
+$ dnf install cifs-utils
+$ touch /etc/samba/creds.txt
+$ chmod 600 /etc/samba/creds.txt
+$ cat /etc/samba/creds.txt
+username=sambamount
+password=redhat
+$ mkdir /devs_data
+$ cat /etc/fstab
+//serverd.lab.example.com/devdata /devs_data cifs credentials=/etc/samba/creds.txt,multiuser,seal 0 0
+$ mount /devs_data
+$ cifscreds add serverd.lab.example.com
+
+10.0 Accessing iSCSI Storage
+
+servera
+$ dnf install iscsi-initiator-utils
+$ systemctl start iscsid  -> Start the iscsid service to generate the /etc/iscsi/initiatorname.iscsi file:
+$ cat /etc/iscsi/initiatorname.iscsi
+InitiatorName=iqn.2025-01.com.example:servera
+$ systemctl restart iscsid
+$ iscsiadm -m discovery -t st -p 172.25.250.13 -> discover
+$ iscsiadm -m node -T iqn.2025-01.com.example:serverd -p 172.25.250.13 -l -> login
+$ iscsiadm -m session -P 3 -> identfy the block device
+Attached scsi disk sdc  
+$ lsblk --fs
+$ mkfs.xfs /dev/sdc
+$ lsblk --fs /dev/sdc -> take the uuid
+$ cat /etc/fstab
+UUID=9960d463-5274-42bb-8244-48d0b62cb040  /data  xfs  _netdev  0  0
+$ iscsiadm -m node -T iqn.2025-01.com.example:serverd -p 172.25.250.13 -u -> logout 
+$ iscsiadm -m node -T iqn.2025-01.com.example:serverd -p 172.25.250.13 -o delete -> delete the record
