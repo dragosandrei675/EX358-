@@ -88,14 +88,15 @@ $ unbound-control flush
 $ systemctl enable --now unbound
 $ firewall-cmd --permanent --add-service=dns
 
-$ cat /etc/unbound/unbound.conf
+$ cat /etc/unbound/conf.d/caching.conf
 server:
-        interface-automatic: yes
+        interface-automatic: yes -> Use Unbound as the name server.
+        interface: 172.25.250.10 -> Listen on the 172.25.250.10 interface.
         access-control: 172.25.250.0/24 allow
         domain-insecure: "example.com"
 
 forward-zone:
-        name: "."
+        name: .
         forward-addr: 172.25.250.220
 
 $ cat /files/unbound.conf.j2
@@ -157,12 +158,13 @@ $ restorecon -Rv /var/named/secondary
 
 - Configure DHCPv4
 
+$ nmcli con add con-name ge-conn type ethernet ipv4.method manual ipv4.address 192.168.0.10/24 ifname eth1 ( on dhcp-server )
 $ dnf install dhcp-server
 $ systemctl enable --now dhcpd
 $ firewall-cmd --permanent --add-service=dhcp
 $ cat /etc/dhcp/dhcpd.conf
 $ dhcpt -t
-$ nmcli con add con-name dhcp-connection type ethernet ifname eth0 ipv4.method auto
+$ nmcli con add con-name dhcp-connection type ethernet ifname eth0 ipv4.method auto ( on client )
 
 authoritative;
 
@@ -181,6 +183,10 @@ host serverb {
 
 
 $ cat templates/dhcpd6.conf.j2
+$ dhcpd -t -6 -cf /etc/dhcp/dhcpd6.conf
+$ systemctl enable --now dhcpd6
+firewall-cmd --permanent --add-service=dhcpv6
+$ nmcli con add con-name dhcp-conn type ethernet ifname eth1 ipv6.method auto ( on clinet )
 authoritative;
 
 subnet6 {{ IPv6_prefix }} {
@@ -190,6 +196,13 @@ subnet6 {{ IPv6_prefix }} {
   default-lease-time 600;
   max-lease-time 7200;
 }
+host serverc {
+  host-identifier option
+    dhcp6.client-id 00:04:48:09:65:88:bd:ef:a7:ed:cd:60:d9:8f:b8:4d:7d:89;
+  fixed-address6 fde2:6494:1e09:2::0451;
+}
+
+journalctl -u dhcpd6.service | grep duid
 
 5.0 Managing Printers and Printing Files
 
@@ -331,11 +344,17 @@ mysql_users:
         group: root
         mode: "0644"
 
+    - name: Backup database
+      community.mysql.mysql_db:
+        name: inventory
+        state: dump
+        target: /srv/inventory.dump
+
     - name: Restore legacy db
       community.mysql.mysql_db:
         name: legacy
         state: import
-        target: /srv/legacy.sqp
+        target: /srv/legacy.sql
 
     - name: Create users
       community.mysql.mysql_user:
@@ -497,7 +516,7 @@ $ smbpasswd -a developer1
 
 $ mkdir /srv/developers
 $ chown sambamount:developers /srv/developers
-$ semanage fcontext -a -t samaba_share_t '/srv/developers(/.*)?'
+$ semanage fcontext -a -t samba_share_t '/srv/developers(/.*)?'
 $ restorecon -Rv /srv/developers
 
 $ cat /etc/samba/smb.conf
@@ -536,10 +555,10 @@ $ dnf install iscsi-initiator-utils
 $ systemctl start iscsid  -> Start the iscsid service to generate the /etc/iscsi/initiatorname.iscsi file:
 $ cat /etc/iscsi/initiatorname.iscsi
 InitiatorName=iqn.2025-01.com.example:servera
-$ systemctl restart iscsid
-$ iscsiadm -m discovery -t st -p 172.25.250.13 -> discover
+
+$ iscsiadm -m discovery -t st -p 172.25.250.13                            -> discover
 $ iscsiadm -m node -T iqn.2025-01.com.example:serverd -p 172.25.250.13 -l -> login
-$ iscsiadm -m session -P 3 -> identfy the block device
+$ iscsiadm -m session -P 3                                                -> identfy the block device
 Attached scsi disk sdc  
 $ lsblk --fs
 $ mkfs.xfs /dev/sdc
