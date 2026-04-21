@@ -246,6 +246,63 @@ $ mutt -f imaps://imap.lab.example.com
 
 7.0 Configuring MariaDB SQL Databases
 
+-- Manual installation
+
+$ mysql_secure_installation
+Switch to unix_socket authentication [Y/n] n
+
+--- Create legacy DB
+$ mysql -u root -e 'CREATE DATABASE legacy;'
+$ mysql -u root legacy < legacy.sql
+$ USE mysql; -> use mysql database
+$ SHOW DATABASES;
+$ SHOW TABLES;
+$ CREATE TABLE product;
+$ DROP TABLE product;
+
+-- Create users
+$ mysql -u root
+$ CREATE USER devops@localhost IDENTIFIED WITH 'unix_socket';
+$ CREATE USER steve@'%' IDENTIFIED BY 'redhat123';
+$ GRANT SELECT ON inventory.* TO steve@'%';
+$ CREATE USER mary IDENTIFIED BY 'mary_password';
+$ GRANT SELECT ON legacy.* TO mary;
+$ CREATE USER legacy IDENTIFIED BY 'legacy_password';
+$ GRANT SELECT,INSERT,UPDATE,DELETE ON legacy.* TO mary;
+$ FLUSH PRIVILEGES; - reload
+$ DESCRIBE
+
+$ INSERT INTO product
+    -> (name,price,stock,id_category,id_manufacturer)
+    -> VALUES ('ThinkStation S20',1799.49,15,2,4);
+
+$ cat my.cnf
+[client]
+user=root
+password=redhat
+socket=/var/lib/mysql/mysql.sock
+
+chmod 755 /var/lib/mysql
+
+restoreconn -vvRF /var/lib/mysql
+
+- Create a logical backup
+
+$ mysqldump -u root -p inventory > /backup/inventory.dump
+
+- Restoring a Logical Backup
+
+$ mysql -u root inventory < /root/inventory.dump
+
+- Create a Physical Backup
+
+mariabackup --backup --target-dir /var/mariadb/backup/ --user root --password redhat
+
+- Restore a Physical Backup
+
+mariabackup --copy-back --target-dir=/var/mariadb/backup/
+
+
 $ cat files/.my.cnf.j2
 [client]
 user=root
@@ -379,27 +436,20 @@ $ semanage fcontext -a -t httpd_sys_content_t '/srv/serverc(/.*)?'
 $ restorecon -Rv /srv/
 $ cat /etc/nginx/conf.d/serverc.conf
 
-server { -> Configuring Virtual Servers
-    listen 80 ;
-    server_name www-a.lab.example.com;
-    return 301 https://$host$request_uri;
-
-    access_log /var/log/nginx/example.com_access.log main;
-    error_log /var/log/nginx/example.com_error.log main;
-    location / {
-        root /srv/www/example.com;
-        index index.html index.htm;
-
+server {
+  listen 443 ssl;
+  server_name serverc.lab.example.com;
+  ssl_certificate /etc/pki/tls/certs/serverc.lab.example.com.crt;
+  ssl_certificate_key /etc/pki/tls/private/serverc.lab.example.com.key;
+  location / {
+    root /srv/serverc;
+    index index.html;
+  }
 }
-server { -> Configuring TLS Virtual Servers
-    listen 443 ssl;
-    server_name serverc.lab.example.com;
-    ssl_certificate /etc/pki/tls/certs/serverc.lab.example.com.crt;
-    ssl_certificate_key /etc/pki/tls/private/serverc.lab.example.com.key;
-    location / {
-        root /srv/serverc;
-        index index.html;
-    }
+server {
+  listen 80;
+  server_name serverc.lab.example.com;
+  return 301 https://$host$request_uri;
 }
 
 $ firewall-cmd --permanent --add-service=http
@@ -565,5 +615,6 @@ $ mkfs.xfs /dev/sdc
 $ lsblk --fs /dev/sdc -> take the uuid
 $ cat /etc/fstab
 UUID=9960d463-5274-42bb-8244-48d0b62cb040  /data  xfs  _netdev  0  0
+
 $ iscsiadm -m node -T iqn.2025-01.com.example:serverd -p 172.25.250.13 -u -> logout 
 $ iscsiadm -m node -T iqn.2025-01.com.example:serverd -p 172.25.250.13 -o delete -> delete the record
