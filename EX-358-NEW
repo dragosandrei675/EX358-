@@ -1,0 +1,541 @@
+358
+
+----  1.0 Managing Networking Services
+
+$ nmcli con add con-name lab-conn ifname eth1 type ethernet ipv4.method false ipv4.address 192.168.0.1/24 connection.autoconnect true
+
+---
+- name: Playbook to configure network interface
+  hosts: servera
+  become: true
+  vars:
+    network_connections:
+      - name: lab_conn
+        type: ethernet
+        state: up
+        interface_name: eth1
+        autoconnect: true
+        ip:
+          dhcp4: false
+          address:
+            - 192.168.0.1/24
+
+  roles:
+    - redhat.rhel_system_roles.network
+
+----- 2.0 Manage Network Bonding
+
+$ nmcli con add con-name bond0 type bond ifname bond0 mode active-backup ipv4.address 192.168.0.100/24 ipv4.method manual
+$ nmcli con add con-name bond0-port1 type ethernet port-type bond ifname eth1 controller bond0
+
+---
+- name: Playbook to configure bonding
+  hosts: servera
+  become: true
+  vars:
+    network_connections:
+      - name: bond0
+        type: bond
+        state: up
+        interface_name: bond0
+        bond:
+          mode: active-backup
+        autoconnect: true
+        ip:
+          dhcp4: false
+          address:
+            - 192.168.0.100/24
+
+      - name: bond0-eth1
+        type: ethernet
+        interface_name: eth1
+        controller: bond0
+        port_type: bond
+        state: up
+        autoconnect: true
+
+  roles:
+    - redhat.rhel_system_roles.network
+
+------ 3.0 Unbound and Bind / DNS
+
+$ dnf install unbound
+$ firewall-cmd --add-service=dns --permanent
+$ systemctl start unbound
+$ unbound-control-setup
+$ unbound-checkconf
+$ unbound-control dump_cache
+$ cat /etc/unbound/conf.d/caching.conf
+
+server:
+      interface-automatic: yes -> Use unbound as the name server
+      interface: 172.25.250.10 -> if is specified
+      access-control: 172.25.250.0/24 allow
+      domain-insecure: "example.com"
+
+forward-zone:
+      name: .
+      forward-addr: 172.25.250.254
+
+- Primary DNS server
+
+$ dnf install bind 
+$ firewall-cmd --add-service=dns --permanent
+$ firewall-cmd --reload
+$ systemctl start named
+$ cat /etc/named.conf
+
+options {
+        listen-on port 53 { any; };
+        listen-on-v6 port 53 { any; };
+        directory       "/var/named";
+        dump-file       "/var/named/data/cache_dump.db";
+        statistics-file "/var/named/data/named_stats.txt";
+        memstatistics-file "/var/named/data/named_mem_stats.txt";
+        secroots-file   "/var/named/data/named.secroots";
+        recursing-file  "/var/named/data/named.recursing";
+        allow-query     { localhost; 172.25.250.254; 192.168.0.0/24; };
+
+        recursion no;
+
+        dnssec-validation yes;
+
+        managed-keys-directory "/var/named/dynamic";
+        geoip-directory "/usr/share/GeoIP";
+
+        pid-file "/run/named/named.pid";
+        session-keyfile "/run/named/session.key";
+
+        include "/etc/crypto-policies/back-ends/bind.config";
+};
+
+logging {
+        channel default_debug {
+                file "data/named.run";
+                severity dynamic;
+        };
+};
+
+include "/etc/named.rfc1912.zones";
+include "/etc/named.root.key";
+
+$ cat /etc/named.backend.conf
+$ chgrp named /etc/named.backend.conf
+
+
+zone "backend.lab.example.com" IN {
+        type primary;
+        file "backend.lab.example.com.zone";
+        forwarders {};
+};
+
+zone "0.168.192.in-addr.arpa" IN {
+        type primary;
+        file "192.168.0.zone";
+        forwarders {};
+};
+
+zone "0.0.0.0.0.0.0.0.0.0.0.0.0.8.e.f.ip6.arpa" IN {
+        type primary;
+        file "fe80::5054:ff:fe01.zone";
+        forwarders {};
+};
+
+$ chgrp named /etc/named.backend.conf
+$ chmod 640 /etc/named.backend.conf
+$ semanage fcontext -a -t named_conf_t '/etc/named.backend.conf(/.*)?'
+$ chmod 640 /var/named/*.zone
+$ chgrp named /var/named/*.zone
+$ cat /var/named/backend.lab.example.com.zone
+$ chgrp named /var/named/backend.lab.example.com.zone
+$ semanage fcontext -a -t named_cache_t '/var/named(/.*)?'
+
+$TTL 300
+
+@       IN SOA  serverb.backend.lab.example.com. dnslab.example.com. (
+                                2026042500      ; serial
+                                1H              ; refresh
+                                5M              ; retry
+                                1W              ; expire
+                                1M )            ; minimum
+
+; owner         TTL     CL  type        RDATA
+                600     IN  NS          serverb
+
+servera					IN 	A 			192.168.0.110
+serverb                 IN  A           192.168.0.111
+servera                 IN  AAAA        fe80::5054:ff:fe01:6e
+serverb                 IN  AAAA        fe80::5054:ff:fe01:6f
+
+$ cat /var/named/192.168.0.zone
+$TTL 300
+
+@       IN SOA  serverb.backend.lab.example.com. dnslab.example.com. (
+                                0               ; serial
+                                1H              ; refresh
+                                5M              ; retry
+                                1W              ; expire
+                                1M )            ; minimum
+
+;owner			TTL		CL 		type   	RDATA
+				600     IN      NS      serverb.lab.example.com
+
+110                     IN      PTR     servera.lab.example.com
+111                     IN      PTR     serverb.lab.example.com
+
+$ cat /var/named/fe80::5054:ff:fe01.zone
+fe80::5054:ff:fe10:006e
+fe80:0000:0000:0000:5054:00ff:fe10:006e -> Expand the IPv6 address (VERY IMPORTANT)
+fe80000000000000505400fffe10006e -> Remove the colons
+e 6 0 0 1 0 e f f f 0 0 4 5 0 5 0 0 0 0 0 0 0 0 0 0 0 0 8 e f -> Reverse EVERY hex digit (nibble by nibble)
+
+fe80::5054:ff:fe01:6e  → servera
+fe80::5054:ff:fe01:6f  → serverb
+fe80::5054:ff:fe01:70  → serverc
+fe80::5054:ff:fe01:71  → serverd
+
+$ host fe80::5054:ff:fe01:6e
+e.6.0.0.1.0.e.f.f.f.0.0.4.5.0.5.ip6.arpa domain name pointer 
+
+$ host fe80::5054:ff:fe01:6ef
+f.6.0.0.1.0.e.f.f.f.0.0.4.5.0.5.ip6.arpa domain name pointer 
+
+TTL 300
+
+@       IN SOA  serverb.backend.lab.example.com. dnslab.example.com. (
+                                0               ; serial
+                                1H              ; refresh
+                                5M              ; retry
+                                1W              ; expire
+                                1M )            ; minimum
+
+;owner			                 TTL	 CL 	type 	RDATA
+				                 600     IN      NS      serverb.lab.example.com
+
+e.6.0.0.1.0.e.f.f.f.0.0.4.5.0.5  IN  PTR  serevra.lab.example.com
+f.6.0.0.1.0.e.f.f.f.0.0.4.5.0.5  IN  PTR  serverb.lab.example.com
+
+--- Configure Server as secondary DNS Server
+
+$ dnf instal bind ..
+$ cat /etc/named.backend.conf
+$ chmod 640 /etc/named.conf /etc/named.backend.conf
+$ chgrp named /etc/named.conf /etc/named.backend.conf
+
+zone "backend.lab.example.com" IN {
+        type secondary;
+        file "secondary/backend.lab.example.com.zone";
+        primaries { 192.168.0.111; };
+};
+zone "0.168.192.in-addr.arpa" IN {
+        type secondary;
+        file "secondary/192.168.0.zone";
+        primaries { 192.168.0.111; };
+};
+
+zone "0.0.0.0.0.0.0.0.0.0.0.0.0.8.e.f.ip6.arpa" IN {
+        type secondary;
+        file "secondary/fe80::5054:ff:fe01.zone";
+        primaries { 192.168.0.111; };
+};
+
+$ mkdir /var/named/secondary
+$ chmod 770 /var/named/secondary
+$ chgrp named /var/named/secondary
+
+------- 4.0 Managing DHCP Server
+
+$ dnf install dhcp-server radvdump
+$ nmcli con add con-name ge-conn type ethernet ipv4.mehtod manual ipv4.address 192.168.0.10/24 ifname eth1
+$ firewall-cmd --add-service=dhcp --permanet
+$ firewall-cmd --reload
+$ systemctl start dhcpd
+$ cat /etc/dhcp/dhcpd.conf
+
+authoritative; ->  indicates that the server is authoritative for the subnets it manages.
+
+subnet 192.168.0.0 netmask 255.255.255.0 {  -> provides the subnet details.
+  range 192.168.0.150 192.168.0.254;        -> distributes IP addresses in the specified range.
+  option routers 192.168.0.1;               ->  default gateway.
+  option broadcast-address 192.168.0.255;
+  option domain-name-servers 172.25.254.254; -> DNS name servers.
+  option domain-search "example.net", "example.com"; 
+  default-lease-time 600; 
+  max-lease-time 7200; 
+}
+
+host web.example.net {
+  hardware ethernet 52:54:00:01:fa:0c;
+  fixed-address 192.168.0.3;
+}
+
+$ dhcpt -t 
+
+$ firewall-cmd --add-service=dhcpv6 --permanent
+$ firewall-cmd --reload
+$ systemctl start dhcpd6
+$ cat /etc/dhcpd/dhcpd6.conf
+
+authoritative;
+
+subnet6 fde2:6494:1e09:2::/64 {
+  range6 fde2:6494:1e09:2::20 fde2:6494:1e09:2::60;
+  option dhcp6.name-servers fde2:6494:1e09:2::cc; 4
+  option dhcp6.domain-search "example.net"; 5
+  default-lease-time 600;
+  max-lease-time 7200;
+}
+host node3 {
+  host-identifier option
+    dhcp6.client-id 00:04:cf:e4:cf:3b:19:63:60:27:08:e8:d5:67:58:e8:57:00;
+  fixed-address6 fde2:6494:1e09:2::0451;
+}
+
+$ dhcpt -t -6 cf /etc/dhcp/dhcpd6.conf
+$ journalctl -u dhcpd6.conf | grep duid
+
+- On client
+
+$ nmcli con add con-name dhcp-conn type ethernet ifname eth1 ipv4.method auto
+$ nmcli con add con-name dhcp-conn type ethernet ifname eth1 ipv6.method auto
+
+
+---- 5.0 Manage Printers cups
+
+$ dnf install cups cups-ipptool
+$ firewall-cmd --add-service=mdns --permanent
+$ systemctl start cups
+$ systemctl start avahi-daemon
+$ ippfind -T 5
+ipp://serverc.lab.example.com:631/printers/rht-remote
+
+$ lpadmin -p lab-local -v ipp://serverc.lab.example.com:631/printers/rht-remote -m everywhere -E
+$ lpadmin -d lab-local
+$ lpamin -p lab-local
+$ cupenable lab-local
+$ cupsaccept lab-local
+
+--- 6.0 Postfix Configuration SMTP
+
+---
+- name: Configure postfix
+  hosts: servera
+  vars:
+    postfix_conf:
+      relayhost: "[smtp.lab.example.com]"
+      inte_interfaces: "loopback-only"
+      mynetworks: "127.0.0.0/8 [::1]/128"
+      myorigin: "lab.example.com"
+      mydestination: ""
+    postfix_backup_multiple: true
+  roles:
+    - redhat.rhel_system_roles.postfix
+
+$ mail -s 'SMTP-review client test' student@lab.example.com
+$ mutt -f imaps://imap.lab.example.com
+
+7.0 --- MariaDB
+
+$ dnf install mariadb mariadb-server mariadb-backup
+$ firewall-cmd --add-service=mysql --permanent
+$ firewall-cmd --reload
+$ cat .my.cnf
+[client]
+user=root
+password=redhat
+socket=/var/lib/mysql/mysql.sock
+$ chmod 755 /var/lib/mysql/mysql.sock
+$ cat /etc/my.cnf.d/mariadb-sever.cnf
+[mysqld]
+bind-address=127.0.0.1 -> local client to be able to use network connections, but not allow remote access to mariadb
+skip-networking=1 -> networking is disable, clients must use socket file to communicate with mariadb No connections via IP (127.0.0.1 or remote)
+skip-networking=0 -> default, mariadb listesn for network connections
+MariaDB on localhost = bind to 127.0.0.1, nothing else
+
+$ mysql_secure_installation
+Switch to unix_socket authentication [Y/n] n
+
+$ ss -tulpn | grep mariadbd
+
+$ mysql -u root -p
+> SHOW DATABASES;
+> USE mysql;
+> CREATE USER devops@localhost IDENTIFIED WITH 'unix_socket';
+> CREATE USER test@'%' IDENTIFIED BY 'test_password';
+> CREATE USER mobius@'192.168.1.%' IDENTIFIED BY 'mobius_password';
+
+> GRANT SELECT, INSERT, UPDATE, DELETE ON mysql.* TO devops@localhost;
+> GRANT ALL PRIVILEGES ON *.* TO test; -> grant all privileges for all databases and tables for a user
+> REVOKE SELECT, UPDATE, INSERT ON inventory.category FROM mobius@localhost -> remove user privileges on inventory db and category table
+
+> FLUSH PRIVILEGES;
+> SHOW GRANTS FOR root@localhost;
+> DROP USER mobius@'%';
+> DESCRIBE users;
+> USE inventory;
+> SHOW TABLES;
+> CREATE TABLE product;
+> DROP TABLE product;
+> SELECT * FROM products;
+> UPDATE product SET price=2179.14, stock=10 WHERE id=2;
+> INSERT INTO product (name,price,stock,id_category,id_manufacturer) VALUES ('ThinkStation S20',1799.49,15,2,4);
+
+-- Logical backup: do not include configuration and log files, must perform backup whe service is running
+
+$ mysqldump -u root -p inventory > /backup/inventory.sql
+$ mysqldump -u root --all-databases > /backup/all-databases.sql
+$ mysql -u root inventory < /backup/inventory.sql
+
+-- Physical Backup: raw copies of databases directories and files, include log and conf file, service must be stopped
+
+$ mariadb-backup --backup --target-dir /backup --user root --password redhat
+$ mariadb-backup --copy-back --target-dir=/backup
+$ systemctl start mariadb
+$ chmod 755 /var/lib/mysql/mysql.sock
+$ restorecon -vvRf /var/lib/mysql/mysql.sock
+
+
+--- 8.0 WEB Server NGINX
+
+$ dnf install nginx mod_ssl
+$ firewall-cmd --add-service=http --permanent
+$ firewall-cmd --add-service=https --permanent
+$ firewall-cmd --reload
+$ nginx -t -> check configuration file
+$ echo 'This is the www-a page' > /srv/nginx/www-a/www/index.html
+$ semanage fcontext -a -t httpd_sys_content_t '/srv/nginx(/.*)?'
+
+$ cat /etc/nginx/conf.d/example.com.conf
+
+- If you want incoming HTTP traffic on port 80/TCP to automatically redirect to the HTTPS virtual server
+
+server {
+	listen 80;
+	server_name www.example.com *.lab.example.com node1.example.com;
+	return 301 https://$host$request_uri
+	location / {
+	     root /var/www/www.example.com;
+	}
+}
+
+server {
+	listen 443 ssl;
+	server_name serverc.lab.example.com;
+	ssl_certificate /etc/pki/tls/certs/serverc.lab.example.com.crt;
+	ssl_certificate_key /etc/pki/tls/private/serverc.lab.example.com.key;
+	location / {
+	      root /srv/serverc;
+	      index index.html index.htm;
+	}
+}
+
+- Generate a private key
+$ openssl genrsa -out private.key 2048
+
+- Use the private key to generate the CSR:
+$ openssl req -new -key private.key -out server.csr
+
+
+--- 9.0 Network Storage
+
+$ dnf install nfs-utils
+$ systemctl start nfs-server
+$ firewall-cmd --add-service=nfs --permanent
+$ mkdir /srv/operators
+$ chmod 755 /srv/operators
+$ chmod 2770 /srv/operators -> setgid permission on the directory ensures that files created in the directory are automatically owned by the operators group.
+$ chown root:operators
+$ cat /etc/exports.d/share.exports
+/srv/operators servera.lab.example.com(rw)
+/srv/operators *.lab.example.com(ro)
+/srv/myshare client1.example.com(rw,no_root_squash) -> root user to be able to access the NFS share as the root user, then set the no_root_squash
+
+$ systemctl restart nfs-server
+
+- On Client
+
+$ mkdir -p /share
+$ mount -t nfs serverd.lab.example.com:/srv/operators /share
+$ cat /etc/fsta
+serverd.lab.example.com:/srv/operators /share nfs defaults 0 0
+
+--- SAMBA Server
+
+$ dnf install -y samba
+$ systemctl start samba
+$ firewall-cmd --add-service=smb --permanent
+$ mkdir /srv/sambashare
+$ useradd -r -s /sbin/nologin sambamount
+$ smbpasswd -a sambamount
+$ useradd -s /sbin/nologin -G developers developer1
+$ smbpasswd -a developer1
+$ semanage fcontext -a -t samba_share_t '/srv/sambashare(/.*)?'
+$ restorecon -Rv /srv/sambashare
+$ chown: sambamount:developers /srv/sambashare
+$ chmod 2775 /srv/sambashare -> setgid, files created in the directory are automatically owned by the operators group.
+Everybody has read access to the directory but only the marketing group has write access.
+
+$ chmod 2770 - developers group has full access to the directory and other users have no access to the directory.
+
+- Configure Samba
+
+$ vi /etc/samba/smb.conf
+
+[global]
+        workgroup = MYWORKGROUP
+        smb encrypt = required     -> activate traffic encryption
+        server min protocol = SMB3 -> defined the minimun SMB version
+        security = usr             -> control how samba autthenticate clients
+
+[devdata] -> share named 
+        path = /srv/developers.    -> the path of the share
+        valid user = sambamount, @developers -> restricts access to specific users
+        write list = @developers   -> Users not listed have read-only access.
+        writable  = yes / no      -> authenticated users have read/write access to the share, default is no
+
+
+- Protect the share so that the sambamount user has read access and the members of the developers group have read/write access. Other users must not be able to access the share.
+
+valid user = sambamount, @developers
+write list = @developers
+
+- Protect the share so that everybody can access it, but only members of the marketing group have write access.
+
+write list = @marketing
+
+$ testparm -s -> test the configuration
+
+--- SAMBA Client
+
+$ dnf install cifs-utils
+$ vi /etc/samba/creds.txt
+username=sambamount
+password=redhat
+$ chmod 600 /etc/samba/creds.txt
+$ mkdir /data_smb
+$ cat /etc/fstab
+//serverd.lab.example.com/devata /data_smb cifs credentials=/etc/samba/creds.txt,multiuser,seal 0 0
+
+- multiuser -> insetead of one SMB user for everyone( shared account ), each Linux user authenticates separately
+- seal -> encryption
+
+$ cifscreds add sambamount
+redhat
+redhat
+
+-- 10.0 
+
+$ dnf install iscsi-initiator-utils
+$ systemctl start iscsid
+$ cat /etc/iscsi/initiatorname.iscsi
+InitiatorName=iqn.2025-01.com.example:servera
+$ iscsiadm -m discovery -t st -p 192.168.1.198:3260
+172.25.250.13:3260,1 iqn.2025-01.com.example:serverd
+$ iscsiadm -m node -T iqn.2025-01.com.example:serverd -p 192.168.1.198:3260 -l
+$ iscsiadm -m session -P 3
+$ lsblk --fs
+$ mkfs.xfs /dev/sdc
+$ mkdir /data
+$ lsblk --fs /dev/sdc
+$ cat /etc/fstab
+UUID=9960d463-5274-42bb-8244-48d0b62cb040  /data  xfs  _netdev  0  0
