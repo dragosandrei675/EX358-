@@ -122,6 +122,13 @@ include "/etc/named.rfc1912.zones";
 include "/etc/named.root.key";
 
 $ cat /etc/named.backend.conf
+$ host 192.168.0.10                                                                                                     
+ 10.0.168.192.in-addr.arpa
+$ host fde2:6494:1e09:2::                                                                                                
+Host 0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.2.0.0.0.9.0.e.1.4.9.4.6.2.e.d.f.ip6.arpa
+
+$ dig -x fe80::5054:ff:fe01:71 @localhost
+
 $ chgrp named /etc/named.backend.conf
 
 
@@ -137,7 +144,7 @@ zone "0.168.192.in-addr.arpa" IN {
         forwarders {};
 };
 
-zone "0.0.0.0.0.0.0.0.0.0.0.0.0.8.e.f.ip6.arpa" IN {
+zone "0.0.0.0.0.0.0.0.0.0.0.0.0.8.e.f.ip6.arpa" IN { -> host fe80::5054:ff:fe01:0 , and use the host part last 16 digits
         type primary;
         file "fe80::5054:ff:fe01.zone";
         forwarders {};
@@ -154,9 +161,12 @@ $ semanage fcontext -a -t named_cache_t '/var/named(/.*)?'
 $ named-checkconf
 $ named-checkzone backend.lab.example.com /var/named/backend.lab.example.com.zone
 
+- backend.lab.example.com domain, including reverse DNS zones for the 192.168.0.0/24 and fde2:6494:1e09:2::/64 IP address ranges.
+
+$ cat /var/named/backend.lab.example.com.zone
 $TTL 300
 
-@       IN SOA  serverb.backend.lab.example.com. dnslab.example.com. (
+@       IN SOA  serverb.backend.lab.example.com. root.serverb.backend.example.com. (
                                 2026042500      ; serial
                                 1H              ; refresh
                                 5M              ; retry
@@ -174,7 +184,7 @@ serverb                 IN  AAAA        fe80::5054:ff:fe01:6f
 $ cat /var/named/192.168.0.zone
 $TTL 300
 
-@       IN SOA  serverb.backend.lab.example.com. dnslab.example.com. (
+@       IN SOA  serverb.backend.lab.example.com. root.serverb.backend.example.com. (
                                 0               ; serial
                                 1H              ; refresh
                                 5M              ; retry
@@ -184,8 +194,8 @@ $TTL 300
 ;owner			TTL		CL 		type   	RDATA
 				600     IN      NS      serverb.lab.example.com
 
-110                     IN      PTR     servera.lab.example.com
-111                     IN      PTR     serverb.lab.example.com
+10.0.168.192.IN-ADDR.ARPA.   IN      PTR     servera.lab.example.com
+11                           IN      PTR     serverb.lab.example.com
 
 $ cat /var/named/fe80::5054:ff:fe01.zone
 fe80::5054:ff:fe10:006e
@@ -193,15 +203,11 @@ fe80:0000:0000:0000:5054:00ff:fe10:006e -> Expand the IPv6 address (VERY IMPORTA
 fe80000000000000505400fffe10006e -> Remove the colons
 e 6 0 0 1 0 e f f f 0 0 4 5 0 5 0 0 0 0 0 0 0 0 0 0 0 0 8 e f -> Reverse EVERY hex digit (nibble by nibble)
 
-fe80::5054:ff:fe01:6e  → servera
-fe80::5054:ff:fe01:6f  → serverb
-fe80::5054:ff:fe01:70  → serverc
-fe80::5054:ff:fe01:71  → serverd
 
 $ host fe80::5054:ff:fe01:6e
 e.6.0.0.1.0.e.f.f.f.0.0.4.5.0.5.ip6.arpa domain name pointer 
 
-$ host fe80::5054:ff:fe01:6ef
+$ host fe80::5054:ff:fe01:6f
 f.6.0.0.1.0.e.f.f.f.0.0.4.5.0.5.ip6.arpa domain name pointer 
 
 TTL 300
@@ -218,6 +224,15 @@ TTL 300
 
 e.6.0.0.1.0.e.f.f.f.0.0.4.5.0.5  IN  PTR  serevra.lab.example.com
 f.6.0.0.1.0.e.f.f.f.0.0.4.5.0.5  IN  PTR  serverb.lab.example.com
+
+$ printf '%x\n' 110
+6e
+
+$ printf '%x\n' 10
+a
+
+$ printf '%x\n' 111
+6f
 
 --- Configure Server as secondary DNS Server
 
