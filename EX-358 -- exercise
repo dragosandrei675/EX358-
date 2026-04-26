@@ -428,12 +428,6 @@ $ vi /etc/httpd/conf.d/01-www-x.lab.example.com-vhost.conf
 </VirtualHost>
 
 - Redirect HTTP Client to HTTPS Site
-
-<VirtualHost *:80>
-  ServerName www.lab.example.com
-  Redirect "/" "https://www.lab.example.com"
-</VirtualHost>
-
 <VirtualHost *:443>
   ServerName www.lab.example.com
   SSLEngine On
@@ -448,6 +442,12 @@ $ vi /etc/httpd/conf.d/01-www-x.lab.example.com-vhost.conf
   Require all granted
 </Directory>
 
+<VirtualHost *:80>
+  ServerName www.lab.example.com
+  Redirect "/" "https://www.lab.example.com"
+</VirtualHost>
+
+
 $ dnf install nginx mod_ssl
 $ firewall-cmd --add-service=http --permanent
 $ firewall-cmd --add-service=https --permanent
@@ -461,20 +461,20 @@ $ cat /etc/nginx/conf.d/example.com.conf
 - If you want incoming HTTP traffic on port 80/TCP to automatically redirect to the HTTPS virtual server
 
 server {
-	listen 80;
-	server_name www.example.com *.lab.example.com node1.example.com;
-	return 301 https://$host$request_uri
+  listen 443 ssl;
+  server_name virtual.lab.example.com;
+  ssl_certificate /etc/pki/tls/certs/virtual.lab.example.com.crt;
+  ssl_certificate_key /etc/pki/tls/private/virtual.lab.example.com.key;
+  location / {
+    root /srv/virtual;
+    index index.html;
+  }
 }
 
 server {
-	listen 443 ssl;
-	server_name serverc.lab.example.com;
-	ssl_certificate /etc/pki/tls/certs/serverc.lab.example.com.crt;
-	ssl_certificate_key /etc/pki/tls/private/serverc.lab.example.com.key;
-	location / {
-	      root /srv/serverc;
-	      index index.html index.htm;
-	}
+  listen 80;
+  server_name virtual.lab.example.com;
+  return 301 https://$host$request_uri;
 }
 
 - Generate a private key
