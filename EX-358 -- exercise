@@ -176,7 +176,7 @@ $TTL 300
 ; owner         TTL     CL  type        RDATA
                 600     IN  NS          serverb
 
-servera					IN 	A 			192.168.0.110
+servera					        IN 	A 			192.168.0.110
 serverb                 IN  A           192.168.0.111
 servera                 IN  AAAA        fe80::5054:ff:fe01:6e
 serverb                 IN  AAAA        fe80::5054:ff:fe01:6f
@@ -192,10 +192,10 @@ $TTL 300
                                 1M )            ; minimum
 
 ;owner			TTL		CL 		type   	RDATA
-				600     IN      NS      serverb.lab.example.com
+				600     IN      NS      serverb.backend.lab.example.com.
 
-10.0.168.192.IN-ADDR.ARPA.   IN      PTR     servera.lab.example.com
-11                           IN      PTR     serverb.lab.example.com
+10.0.168.192.IN-ADDR.ARPA.   IN      PTR     servera.lab.example.com.
+11                           IN      PTR     serverb.lab.example.com.
 
 $ cat /var/named/fe80::5054:ff:fe01.zone
 fe80::5054:ff:fe10:006e
@@ -219,11 +219,11 @@ TTL 300
                                 1W              ; expire
                                 1M )            ; minimum
 
-;owner			                 TTL	 CL 	type 	RDATA
-				                 600     IN      NS      serverb.lab.example.com
+;owner			             TTL	   CL 	  type 	  RDATA
+				                 600     IN      NS     serverb.backend.lab.example.com.
 
-e.6.0.0.1.0.e.f.f.f.0.0.4.5.0.5  IN  PTR  serevra.lab.example.com
-f.6.0.0.1.0.e.f.f.f.0.0.4.5.0.5  IN  PTR  serverb.lab.example.com
+e.6.0.0.1.0.e.f.f.f.0.0.4.5.0.5  IN  PTR  serevra.lab.example.com.
+f.6.0.0.1.0.e.f.f.f.0.0.4.5.0.5  IN  PTR  serverb.lab.example.com.
 
 $ printf '%x\n' 110
 6e
@@ -261,6 +261,13 @@ zone "0.0.0.0.0.0.0.0.0.0.0.0.0.8.e.f.ip6.arpa" IN {
 $ mkdir /var/named/secondary
 $ chmod 770 /var/named/secondary
 $ chgrp named /var/named/secondary
+
+
+named-checkconf
+named-checkzone backend.lab.example.com backend.lab.example.com.zone
+named-checkzone 0.168.192.in-addr.arpa 192.168.0.zone
+named-checkzone 2.0.0.0.9.0.e.1.4.9.4.6.2.e.d.f.ip6.arpa fde2.6494.1e09.2.zone
+
 
 ------- 4.0 Managing DHCP Server
 
@@ -432,6 +439,7 @@ $ firewall-cmd --add-service=https --permanent
 - Configure a virtual hosts with apache http server
 
 $ vi /etc/httpd/conf.d/01-www-x.lab.example.com-vhost.conf
+
 <VirtualHost *:80>
   ServerName www-x.lab.example.com
   ServerAlias www-x
@@ -443,25 +451,21 @@ $ vi /etc/httpd/conf.d/01-www-x.lab.example.com-vhost.conf
 </VirtualHost>
 
 - Redirect HTTP Client to HTTPS Site
-<VirtualHost *:443>
-  ServerName www.lab.example.com
-  SSLEngine On
-  SSLProtocol all -SSLv2 -SSLv3
-  SSLCipherSuite HIGH:MEDIUM:!aNull:!MD5
-  SSLHonorCipherOrder on
-  SSLCertificateFile /etc/pki/tls/certs/www.lab.example.com.crt
-  SSLCertificateKeyFile /etc/pki/tls/private/www.lab.example.com.key
-  DocumentRoot /srv/www/www.lab.example.com
-</VirtualHost>
-<Directory /srv/www-a/www>
+
+<Directory /srv/serverc>
   Require all granted
 </Directory>
-
-<VirtualHost *:80>
-  ServerName www.lab.example.com
-  Redirect "/" "https://www.lab.example.com"
+<VirtualHost *:443>
+  ServerName serverc.lab.example.com
+  SSLEngine On
+  SSLCertificateFile /etc/pki/tls/certs/serverc.lab.example.com.crt
+  SSLCertificateKeyFile /etc/pki/tls/private/serverc.lab.example.com.key
+  DocumentRoot /srv/serverc
 </VirtualHost>
-
+<VirtualHost *:80>
+  ServerName serverc.lab.example.com
+  Redirect "/" "https://serverc.lab.example.com"
+</VirtualHost>
 
 $ dnf install nginx mod_ssl
 $ firewall-cmd --add-service=http --permanent
