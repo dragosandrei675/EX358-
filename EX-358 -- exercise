@@ -176,7 +176,7 @@ $TTL 300
 ; owner         TTL     CL  type        RDATA
                 600     IN  NS          serverb
 
-servera					        IN 	A 			192.168.0.110
+servera					        IN 	A 			    192.168.0.110
 serverb                 IN  A           192.168.0.111
 servera                 IN  AAAA        fe80::5054:ff:fe01:6e
 serverb                 IN  AAAA        fe80::5054:ff:fe01:6f
@@ -338,11 +338,78 @@ ipp://serverc.lab.example.com:631/printers/rht-remote
 $ lpadmin -p lab-local -v ipp://serverc.lab.example.com:631/printers/rht-remote -m everywhere -E
 $ lpadmin -d lab-local
 $ lpamin -p lab-local
+$ lpadmin -p lab-local -o printer-is-shared=true
+$ cupsctl --share-printers
 $ cupenable lab-local
 $ cupsaccept lab-local
 $ lp /etc/hosts
 $ echo "EX358 test" | lp
 $ setsebool -P cups_execmem on
+
+---
+- name: Install CUPS and create a print queue
+  hosts: clients
+  gather_facts: false
+  become: true
+  vars:
+    print_packages:
+      - cups
+      - avaho
+    print_service:
+      - cups
+      - avahi-daemon
+    print_firewall_services:
+      - mdns
+    queue_name: my-local
+    device_uri: ipp://serverc.lab.example.com:631/printers/rht-remote
+
+  tasks:
+    - name: Install the print packages
+      ansible.builtin.dnf:
+        name: "{{ print_pacakges }}"
+        state: present
+
+    - name: Start the print service
+      ansible.builtin.service:
+        name: "{{ item }}"
+        state: started
+        enabled: true
+      loop: "{{ print_service }}"
+
+    - name: Open firewall
+      ansible.posix.firealld:
+        service: "{{ print_firewall_services }}"
+        state: enabled
+        permanent: true 
+        immediate: true
+
+    - name: Check if print queue already exists
+      ansible.builtin.command:
+        cmd: lpstat -p {{ queue_name }}
+      register: cmdout
+      ignore_errors: true
+      change_when: false
+
+    - name: Create print queue
+      ansible.builtin.command:
+        cmd: lpadmin -p {{ queue_name }} -v {{ device_uri }} -m everywhere -E
+      when: cmdout.rc != 0
+
+    - name: Check is the print has been added
+      ansible.builtin.command:
+        cmd: lpstat -p {{ queue_name }}
+      register: result
+
+    - name: Make default print queue
+      ansible.builtin.command:
+        lpadmin -d {{ queue_name }}
+      change_when: false
+      when: result.rc != 0
+
+    - name: Accept cups jobs
+      ansible.builtin.command:
+        cmd: cupsenable {{ queue_name }}
+      changed_when: false
 
 --- 6.0 Postfix Configuration SMTP
 
@@ -352,7 +419,7 @@ $ setsebool -P cups_execmem on
   vars:
     postfix_conf:
       relayhost: "[smtp.lab.example.com]"
-      inte_interfaces: "loopback-only"
+      inet_interfaces: "loopback-only"
       mynetworks: "127.0.0.0/8 [::1]/128"
       myorigin: "lab.example.com"
       mydestination: ""
@@ -514,7 +581,7 @@ $ systemctl start nfs-server
 $ firewall-cmd --add-service=nfs --permanent
 $ mkdir /srv/operators
 $ chmod 755 /srv/operators
-$ chmod 2770 /srv/operators -> setgid permission on the directory ensures that files created in the directory are automatically owned by the operators group.
+$ chmod 2770 /srv/operators -> setgid permission on the directory ensures that files created in the directory are automatically owned by the operators group and other have no read or write rights
 $ chown root:operators
 $ cat /etc/exports.d/share.exports
 /srv/operators servera.lab.example.com(rw)
@@ -610,3 +677,14 @@ $ mkdir /data
 $ lsblk --fs /dev/sdc
 $ cat /etc/fstab
 UUID=9960d463-5274-42bb-8244-48d0b62cb040  /data  xfs  _netdev  0  0
+
+
+
+SELinux Booleans
+$ setsebool -P httpd_can_network_connect on
+$ setsebool -P httpd_can_network_connect on
+$ setsebool -P samba_enable_home_dirs on
+$ setsebool -P samba_export_all_rw on
+$ setsebool -P cups_execmem on
+$ semanage fcontext -a -t nfs_t "/srv/nfs(/.*)?"
+$ semanage fcontext -a -t samba_share_t "/srv/smb(/.*)?"
